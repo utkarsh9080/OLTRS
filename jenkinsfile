@@ -1,0 +1,116 @@
+
+pipeline {
+    agent any
+
+    tools {
+        jdk 'JDK17'
+        maven 'Maven3'
+    }
+
+    environment {
+        DOCKER_USER = 'utkarsh9080'
+        IMAGE_NAME = 'oltrs'
+        TOMCAT_URL = 'http://localhost:8080'
+    }
+
+    triggers {
+        githubPush()
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/utkarsh9080/OLTRS.git'
+            }
+        }
+
+        stage('Maven Build') {
+            steps {
+                sh 'mvn clean package -DskipTests'
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                sh 'mvn test'
+            }
+        }
+
+        stage('Generate WAR') {
+            steps {
+                sh 'ls -l target/*.war'
+            }
+        }
+
+        stage('Deploy to Tomcat') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'tomcat-creds',
+                        usernameVariable: 'TOMCAT_USER',
+                        passwordVariable: 'TOMCAT_PASS'
+                    )
+                ]) {
+                    sh '''
+                    curl --fail -u "$TOMCAT_USER:$TOMCAT_PASS" \
+                    -T target/*.war \
+                    "$TOMCAT_URL/manager/text/deploy?path=/OLTRS&update=true"
+                    '''
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh '''
+                docker build -t $DOCKER_USER/$IMAGE_NAME:$BUILD_NUMBER .
+                '''
+            }
+        }
+
+        stage('Docker Push') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-creds',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+                    sh '''
+                    echo "$DOCKER_PASS" | docker login \
+                    -u "$DOCKER_USER" --password-stdin
+
+                    docker push $DOCKER_USER/$IMAGE_NAME:$BUILD_NUMBER
+                    docker tag $DOCKER_USER/$IMAGE_NAME:$BUILD_NUMBER \
+                    $DOCKER_USER/$IMAGE_NAME:latest
+
+                    docker push $DOCKER_USER/$IMAGE_NAME:latest
+
+                    docker logout
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            emailext(
+                subject: "SUCCESS: OLTRS Pipeline",
+                body: "Build ${BUILD_NUMBER} completed successfully.",
+                to: 'YOUR_EMAIL@gmail.com'
+            )
+        }
+
+        failure {
+            emailext(
+                subject: "FAILED: OLTRS Pipeline",
+                body: "Build ${BUILD_NUMBER} failed. Check Jenkins console output.",
+                to: 'YOUR_EMAIL@gmail.com'
+            )
+        }
+    }
+}
